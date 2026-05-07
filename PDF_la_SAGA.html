@@ -1,0 +1,727 @@
+<!DOCTYPE html>
+<html lang="ro">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PDF Extras → SAGA CSV</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script>
+  if (typeof pdfjsLib !== 'undefined') {
+    pdfjsLib.GlobalWorkerOptions.workerSrc =
+      'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+  }
+</script>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=DM+Sans:wght@300;400;500;700&display=swap');
+
+  :root {
+    --bg: #0d0d0d;
+    --surface: #141414;
+    --border: #2a2a2a;
+    --accent: #00ff88;
+    --accent2: #ff3366;
+    --text: #e8e8e8;
+    --muted: #555;
+    --card: #1a1a1a;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'DM Sans', sans-serif;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 40px 20px;
+  }
+
+  body::before {
+    content: '';
+    position: fixed; inset: 0;
+    background-image:
+      linear-gradient(rgba(0,255,136,0.03) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(0,255,136,0.03) 1px, transparent 1px);
+    background-size: 40px 40px;
+    pointer-events: none;
+    z-index: 0;
+  }
+
+  .container {
+    width: 100%;
+    max-width: 680px;
+    position: relative;
+    z-index: 1;
+  }
+
+  .header { margin-bottom: 40px; text-align: center; }
+  .header-tag {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 11px;
+    color: var(--accent);
+    letter-spacing: 3px;
+    text-transform: uppercase;
+    margin-bottom: 12px;
+    display: block;
+  }
+  .header h1 { font-size: 36px; font-weight: 700; letter-spacing: -1px; line-height: 1.1; }
+  .header h1 span { color: var(--accent); }
+  .header p { color: var(--muted); font-size: 14px; margin-top: 10px; }
+
+  .banks { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; margin-top: 16px; }
+  .bank-badge {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 10px;
+    padding: 4px 10px;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--muted);
+    letter-spacing: 1px;
+  }
+  .bank-badge.active { border-color: var(--accent); color: var(--accent); }
+
+  .dropzone {
+    border: 2px dashed var(--border);
+    border-radius: 12px;
+    padding: 60px 40px;
+    text-align: center;
+    cursor: pointer;
+    transition: all 0.2s;
+    background: var(--surface);
+    position: relative;
+    overflow: hidden;
+  }
+  .dropzone::before {
+    content: '';
+    position: absolute; inset: 0;
+    background: radial-gradient(ellipse at 50% 0%, rgba(0,255,136,0.05), transparent 70%);
+    pointer-events: none;
+  }
+  .dropzone:hover, .dropzone.dragover { border-color: var(--accent); background: #141f1a; }
+  .dropzone.dragover { transform: scale(1.01); }
+  .drop-icon { font-size: 48px; margin-bottom: 16px; display: block; filter: grayscale(1); transition: filter 0.2s; }
+  .dropzone:hover .drop-icon { filter: none; }
+  .drop-title { font-size: 18px; font-weight: 500; margin-bottom: 8px; }
+  .drop-sub { font-size: 13px; color: var(--muted); }
+  #fileInput { display: none; }
+
+  .dropzone.has-file { border-color: var(--accent); border-style: solid; padding: 30px 40px; }
+  .file-info { display: none; align-items: center; gap: 16px; text-align: left; }
+  .dropzone.has-file .file-info { display: flex; }
+  .dropzone.has-file .drop-default { display: none; }
+  .file-icon { font-size: 36px; flex-shrink: 0; }
+  .file-name { font-family: 'IBM Plex Mono', monospace; font-size: 13px; color: var(--accent); word-break: break-all; }
+  .file-meta { font-size: 12px; color: var(--muted); margin-top: 4px; }
+
+  .btn-row { display: flex; gap: 12px; margin-top: 16px; }
+  .btn { flex: 1; padding: 14px; border: none; border-radius: 8px; font-family: 'DM Sans', sans-serif; font-size: 15px; font-weight: 500; cursor: pointer; transition: all 0.15s; }
+  .btn-secondary { background: var(--surface); border: 1px solid var(--border); color: var(--text); }
+  .btn-secondary:hover { border-color: var(--accent); color: var(--accent); }
+  .btn-primary { background: var(--accent); color: #000; font-weight: 700; }
+  .btn-primary:hover { background: #00ffaa; transform: translateY(-1px); }
+  .btn-primary:disabled { background: var(--border); color: var(--muted); cursor: not-allowed; transform: none; }
+
+  .terminal { background: #0a0a0a; border: 1px solid var(--border); border-radius: 8px; margin-top: 16px; overflow: hidden; display: none; }
+  .terminal.visible { display: block; }
+  .terminal-header { background: var(--surface); border-bottom: 1px solid var(--border); padding: 10px 16px; display: flex; align-items: center; gap: 8px; }
+  .term-dot { width: 10px; height: 10px; border-radius: 50%; }
+  .term-dot:nth-child(1) { background: #ff5f57; }
+  .term-dot:nth-child(2) { background: #ffbd2e; }
+  .term-dot:nth-child(3) { background: #28c840; }
+  .term-title { font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: var(--muted); margin-left: 8px; }
+  .terminal-body { padding: 16px; font-family: 'IBM Plex Mono', monospace; font-size: 12px; line-height: 1.8; min-height: 120px; max-height: 240px; overflow-y: auto; color: #aaa; }
+  .log-line { display: block; }
+  .log-ok   { color: var(--accent); }
+  .log-err  { color: var(--accent2); }
+  .log-info { color: #888; }
+
+  .progress-bar { height: 3px; background: var(--border); border-radius: 2px; margin-top: 12px; overflow: hidden; display: none; }
+  .progress-bar.visible { display: block; }
+  .progress-fill { height: 100%; background: var(--accent); border-radius: 2px; transition: width 0.3s; width: 0%; }
+  .progress-fill.indeterminate { width: 40%; animation: slide 1.2s infinite ease-in-out; }
+  @keyframes slide { 0% { transform: translateX(-200%); } 100% { transform: translateX(350%); } }
+
+  .result-card { display: none; background: var(--card); border: 1px solid var(--accent); border-radius: 12px; padding: 24px; margin-top: 16px; }
+  .result-card.visible { display: block; }
+  .result-title { font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: var(--accent); letter-spacing: 2px; margin-bottom: 16px; }
+  .result-stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-bottom: 20px; }
+  .stat-box { background: var(--surface); border-radius: 8px; padding: 16px; text-align: center; }
+  .stat-num { font-size: 28px; font-weight: 700; display: block; font-variant-numeric: tabular-nums; }
+  .stat-num.green { color: var(--accent); }
+  .stat-num.red   { color: var(--accent2); }
+  .stat-label { font-size: 11px; color: var(--muted); margin-top: 4px; font-family: 'IBM Plex Mono', monospace; }
+  .btn-download { width: 100%; padding: 16px; background: var(--accent); color: #000; font-family: 'DM Sans', sans-serif; font-size: 16px; font-weight: 700; border: none; border-radius: 8px; cursor: pointer; transition: all 0.15s; letter-spacing: 0.5px; }
+  .btn-download:hover { background: #00ffaa; transform: translateY(-1px); }
+
+  .footer { text-align: center; margin-top: 40px; font-size: 12px; color: var(--muted); font-family: 'IBM Plex Mono', monospace; }
+</style>
+</head>
+<body>
+<div class="container">
+
+  <div class="header">
+    <span class="header-tag">▸ instrument contabilitate</span>
+    <h1>PDF Extras<br><span>→ SAGA CSV</span></h1>
+    <p>Converteste automat extrasele bancare in format CSV pentru SAGA</p>
+    <div class="banks">
+      <span class="bank-badge active">BT</span>
+      <span class="bank-badge active">ING</span>
+      <span class="bank-badge active">UniCredit</span>
+      <span class="bank-badge active">BCR</span>
+      <span class="bank-badge active">Raiffeisen</span>
+      <span class="bank-badge">BRD · în curând</span>
+    </div>
+  </div>
+
+  <div class="dropzone" id="dropzone" onclick="document.getElementById('fileInput').click()">
+    <div class="drop-default">
+      <span class="drop-icon">📄</span>
+      <div class="drop-title">Trage PDF-ul aici</div>
+      <div class="drop-sub">sau apasă pentru a selecta fișierul</div>
+    </div>
+    <div class="file-info">
+      <span class="file-icon">📋</span>
+      <div>
+        <div class="file-name" id="fileName">—</div>
+        <div class="file-meta" id="fileMeta">—</div>
+      </div>
+    </div>
+  </div>
+  <input type="file" id="fileInput" accept=".pdf">
+
+  <div class="btn-row">
+    <button class="btn btn-secondary" onclick="document.getElementById('fileInput').click()">
+      Alege alt PDF
+    </button>
+    <button class="btn btn-primary" id="btnConvert" disabled onclick="convertPDF()">
+      ▶ Converteste
+    </button>
+  </div>
+
+  <div class="progress-bar" id="progressBar">
+    <div class="progress-fill indeterminate" id="progressFill"></div>
+  </div>
+
+  <div class="terminal" id="terminal">
+    <div class="terminal-header">
+      <div class="term-dot"></div><div class="term-dot"></div><div class="term-dot"></div>
+      <span class="term-title">output.log</span>
+    </div>
+    <div class="terminal-body" id="termBody"></div>
+  </div>
+
+  <div class="result-card" id="resultCard">
+    <div class="result-title">▸ REZULTAT CONVERSIE</div>
+    <div class="result-stats">
+      <div class="stat-box"><span class="stat-num" id="statTotal">0</span><div class="stat-label">TOTAL</div></div>
+      <div class="stat-box"><span class="stat-num red" id="statP">0</span><div class="stat-label">PLATI (P)</div></div>
+      <div class="stat-box"><span class="stat-num green" id="statI">0</span><div class="stat-label">INCASARI (I)</div></div>
+    </div>
+    <button class="btn-download" id="btnDownload">⬇ Descarca CSV pentru SAGA</button>
+  </div>
+
+  <div class="footer">
+    Dupa descarcare: SAGA → Fisiere → Import → Extras cont → CSV
+  </div>
+</div>
+
+<script>
+// ─── State ────────────────────────────────────────────────────────────────────
+let selectedFile = null;
+let csvContent   = '';
+let bankName     = '';
+
+// ─── File handling ────────────────────────────────────────────────────────────
+const dropzone  = document.getElementById('dropzone');
+const fileInput = document.getElementById('fileInput');
+
+dropzone.addEventListener('dragover', e => { e.preventDefault(); dropzone.classList.add('dragover'); });
+dropzone.addEventListener('dragleave', () => dropzone.classList.remove('dragover'));
+dropzone.addEventListener('drop', e => {
+  e.preventDefault(); dropzone.classList.remove('dragover');
+  const f = e.dataTransfer.files[0];
+  if (f && f.type === 'application/pdf') setFile(f);
+});
+fileInput.addEventListener('change', e => { if (e.target.files[0]) setFile(e.target.files[0]); });
+
+function setFile(f) {
+  selectedFile = f;
+  document.getElementById('fileName').textContent = f.name;
+  document.getElementById('fileMeta').textContent = (f.size / 1024).toFixed(0) + ' KB';
+  dropzone.classList.add('has-file');
+  document.getElementById('btnConvert').disabled = false;
+  document.getElementById('resultCard').classList.remove('visible');
+  document.getElementById('terminal').classList.remove('visible');
+  csvContent = '';
+}
+
+// ─── Logging ──────────────────────────────────────────────────────────────────
+function log(msg, cls='log-info') {
+  const tb = document.getElementById('termBody');
+  document.getElementById('terminal').classList.add('visible');
+  const span = document.createElement('span');
+  span.className = 'log-line ' + cls;
+  span.textContent = '› ' + msg;
+  tb.appendChild(span);
+  tb.scrollTop = tb.scrollHeight;
+}
+
+// ─── Utilities ────────────────────────────────────────────────────────────────
+const IBAN_RE = /RO\d{2}[A-Z]{4}[A-Z0-9]{16,}/;
+const CUI_RE  = /(?:CUI[:\s]*|Cod fiscal[:\s]*)(\d{5,10})/i;
+
+function getIBAN(t) { const m = t.match(IBAN_RE); return m ? m[0] : ''; }
+function getCUI(t)  { const m = t.match(CUI_RE);  return m ? m[1] : ''; }
+function fmtSum(v)  { return Math.abs(v).toFixed(2).replace('.', ','); }
+function makeRow(tip, date, val, furnizor, cui='', iban='') {
+  return { Tip: tip, 'Nr. doc.': '', Data: date, Suma: fmtSum(val),
+           'Furnizor / Client': furnizor.substring(0,80),
+           'Cod fiscal': cui, IBAN: iban, Cont: '', Preluat: '' };
+}
+
+// ─── Extract words from PDF ───────────────────────────────────────────────────
+async function extractWords(pdf) {
+  const allWords = [];
+  for (let p = 1; p <= pdf.numPages; p++) {
+    const page    = await pdf.getPage(p);
+    const content = await page.getTextContent();
+    const vp      = page.getViewport({ scale: 1.0 });
+    for (const item of content.items) {
+      if (!item.str.trim()) continue;
+      const tx   = pdfjsLib.Util.transform(vp.transform, item.transform);
+      const x    = tx[4];
+      const yTop = vp.height - tx[5];
+      allWords.push({ text: item.str.trim(), x, y: yTop, page: p, w: item.width });
+    }
+  }
+  return allWords;
+}
+
+function groupIntoRows(words, tolerance=3) {
+  const rows = {};
+  for (const w of words) {
+    const key = Math.round(w.y / tolerance) * tolerance;
+    if (!rows[key]) rows[key] = [];
+    rows[key].push(w);
+  }
+  return Object.entries(rows)
+    .sort(([a],[b]) => +a - +b)
+    .map(([y, ws]) => ({ y: +y, words: ws.sort((a,b) => a.x - b.x) }));
+}
+
+// ─── Bank detection ───────────────────────────────────────────────────────────
+const BANK_CODES = {
+  'BTRL': 'BT', 'INGB': 'ING', 'BACX': 'UniCredit',
+  'RNCB': 'BCR', 'RZBR': 'Raiffeisen', 'BRDE': 'BRD',
+  'TREZ': 'Trezorerie', 'CECE': 'CEC',
+};
+
+function detectBank(words) {
+  const txt = words.map(w => w.text).join(' ');
+
+  const acctPatterns = [
+    /(?:Numar cont|IBAN|Cod IBAN)[:\s]+([A-Z]{2}\d{2}([A-Z]{4})[A-Z0-9]{16,})/i,
+    /(?:cont curent|cont principal)[^\n]*?([A-Z]{2}\d{2}([A-Z]{4})[A-Z0-9]{16,})/i,
+  ];
+  for (const pat of acctPatterns) {
+    const m = txt.match(pat);
+    if (m) {
+      const code = m[2] || (m[1] && m[1].substring(4, 8));
+      if (code && BANK_CODES[code.toUpperCase()]) return BANK_CODES[code.toUpperCase()];
+    }
+  }
+
+  const header = txt.substring(0, 800);
+  const ibanM  = header.match(/[A-Z]{2}\d{2}([A-Z]{4})[A-Z0-9]{16,}/);
+  if (ibanM && BANK_CODES[ibanM[1]]) return BANK_CODES[ibanM[1]];
+
+  const swiftMap = {
+    'BTRLRO': 'BT', 'INGBROBU': 'ING', 'BACXROBU': 'UniCredit',
+    'RNCBROBU': 'BCR', 'RZBRROBU': 'Raiffeisen', 'BRDEROBU': 'BRD'
+  };
+  const upperTxt = header.toUpperCase();
+  for (const [swift, bank] of Object.entries(swiftMap)) {
+    if (upperTxt.includes(swift)) return bank;
+  }
+
+  if (upperTxt.includes('ING BANK') || upperTxt.includes('ING.RO')) return 'ING';
+  if (upperTxt.includes('UNICREDIT')) return 'UniCredit';
+  if (upperTxt.includes('BANCA COMERCIALA ROMANA')) return 'BCR';
+  if (upperTxt.includes('RAIFFEISEN')) return 'Raiffeisen';
+  if (upperTxt.includes('BANCA TRANSILVANIA') && !upperTxt.includes('ING')) return 'BT';
+
+  return 'Necunoscuta';
+}
+
+// ─── AMT helpers ──────────────────────────────────────────────────────────────
+const AMT_DOT = /^-?[\d,]+\.\d{2}$/;
+const AMT_COM = /^[\d.]+,\d{2}$/;
+function isAmtDot(t) { return AMT_DOT.test(t); }
+function isAmtCom(t) { return AMT_COM.test(t); }
+function toFloatDot(s) { return parseFloat(s.replace(/,/g,'')); }
+function toFloatCom(s) { return parseFloat(s.replace(/\./g,'').replace(',','.')); }
+
+// ─── BT Parser ────────────────────────────────────────────────────────────────
+const BT_DATE = /^\d{2}\/\d{2}\/\d{4}$/;
+const BT_SKIP = /SOLD\s|RULAJ\s|BANCA TRANSILVANIA S\.A\.|Info clienti|Solicitant:|Tiparit:|EXTRAS CONT|SUME BLOCATE|TOTAL DISPONIBIL|din care$|Fonduri proprii|Credit neutilizat|Acest extras|www\.bancatransilvania/i;
+const BT_DX   = [420, 500];
+const BT_CX   = [510, 580];
+function fmtDateSlash(s) { const [d,m,y] = s.split('/'); return `${d}.${m}.${y}`; }
+
+function parseBT(words) {
+  const rows = groupIntoRows(words);
+  const txs  = []; let curDate = null;
+  for (const row of rows) {
+    const rt   = row.words.map(w=>w.text).join(' ');
+    if (BT_SKIP.test(rt)) continue;
+    const amts = row.words.filter(w => isAmtDot(w.text));
+    const nonA = row.words.filter(w => !isAmtDot(w.text));
+    if (amts.length >= 2) continue;
+    if (amts.length === 1 && nonA.length === 0) continue;
+    const first = row.words[0]?.text || '';
+    if (BT_DATE.test(first)) curDate = first;
+    if (!curDate || amts.length !== 1) continue;
+    const aw  = amts[0]; const cx = aw.x + (aw.w||20)/2;
+    const val = toFloatDot(aw.text);
+    const desc = nonA.filter(w=>!BT_DATE.test(w.text)).map(w=>w.text).join(' ');
+    const partnerM = rt.match(/;\d+;([^;\/\n]{2,60}?);(RO\d{2}[A-Z]{4}[A-Z0-9]{16})/);
+    const name  = partnerM ? partnerM[1].trim() : '';
+    const iban  = partnerM ? partnerM[2] : getIBAN(rt);
+    const furnizor = name || desc || 'Tranzactie';
+    if (cx >= BT_DX[0] && cx <= BT_DX[1])
+      txs.push(makeRow('P', fmtDateSlash(curDate), val, furnizor, '', iban));
+    else if (cx >= BT_CX[0] && cx <= BT_CX[1])
+      txs.push(makeRow('I', fmtDateSlash(curDate), val, furnizor, '', iban));
+  }
+  return txs;
+}
+
+// ─── ING Parser ───────────────────────────────────────────────────────────────
+const ING_DATE_LINE = /^\s{2,8}(\d{2}\.\d{2}\.\d{4})\s+(.*)/;
+const ING_SKIP_LINE = /ING Bank|Str\. Aviator|BIC code|Acest document|www\.ing|Numar cont:|Titular cont:|Valuta:|Data procesarii|Rezumat|Data\s+Numar\s+tranzactii|Beneficiar \/ Ordonator|\d+\s*\\\s*\d+\s*$/i;
+const ING_SKIP_EXPL = /^(Referinta|Transfer ING Business|Nr\. Card|Autorizare|[a-f0-9]{8}-[a-f0-9]{4}|\d{10,}|Cod fiscal:)/i;
+
+function parsING(words) {
+  const rows  = groupIntoRows(words, 3);
+  const lines = rows.map(row => {
+    let line = '';
+    for (const w of row.words) {
+      const targetCol = Math.round(w.x / 7);
+      while (line.length < targetCol) line += ' ';
+      line += w.text;
+    }
+    return line;
+  });
+
+  const txs = [];
+  let curDate = null, curName = '', curTip = null, curVal = 0;
+  let curIban = '', curCui = '', expl = [];
+
+  function flush() {
+    if (curDate && curTip && curVal > 0) {
+      const e = expl.filter(p => p && !ING_SKIP_EXPL.test(p));
+      const furnizor = [curName, ...e.slice(0,2)].filter(Boolean).join(' | ').substring(0, 120) || curTip;
+      txs.push(makeRow(curTip, curDate, curVal, furnizor, curCui, curIban));
+    }
+  }
+
+  for (const line of lines) {
+    if (ING_SKIP_LINE.test(line)) continue;
+    const stripped = line.trim();
+    if (!stripped) continue;
+
+    const dm = ING_DATE_LINE.exec(line);
+    if (dm) {
+      const amtMatches = [];
+      const re = /-?[\d,]+\.\d{2}/g;
+      let m;
+      while ((m = re.exec(line)) !== null) {
+        if (m.index < 20) continue;
+        amtMatches.push({ val: parseFloat(m[0].replace(/,/g,'')), col: m.index });
+      }
+      if (!amtMatches.length) continue;
+      flush();
+      curDate = dm[1];
+      curName = dm[2].replace(/-?[\d,]+\.\d{2}/g, '').replace(/\s{2,}/g,' ').trim();
+      curIban = ''; curCui = ''; expl = []; curTip = null; curVal = 0;
+      for (const { val, col } of amtMatches) {
+        if (col >= 68) continue;
+        if (val < 0 || (col >= 30 && col <= 52)) { curTip = 'P'; curVal = Math.abs(val); break; }
+        else if (val > 0 && col >= 48 && col <= 67) { curTip = 'I'; curVal = val; break; }
+      }
+      if (!curTip && amtMatches.length) {
+        const first = amtMatches.find(a => a.col < 68);
+        if (first) { curTip = first.val < 0 ? 'P' : 'I'; curVal = Math.abs(first.val); }
+      }
+      continue;
+    }
+    if (!curDate) continue;
+    const ib = getIBAN(stripped); if (ib && !curIban) { curIban = ib; continue; }
+    const cu = getCUI(stripped);  if (cu && !curCui)  { curCui  = cu; continue; }
+    if (/^\d+$/.test(stripped)) continue;
+    expl.push(stripped);
+  }
+  flush();
+  return txs;
+}
+
+// ─── UniCredit Parser ─────────────────────────────────────────────────────────
+const UC_MONTHS = {ianuarie:1,februarie:2,martie:3,aprilie:4,mai:5,iunie:6,
+                   iulie:7,august:8,septembrie:9,octombrie:10,noiembrie:11,decembrie:12};
+const UC_DATE   = /^(\d{1,2})\s+(ianuarie|februarie|martie|aprilie|mai|iunie|iulie|august|septembrie|octombrie|noiembrie|decembrie)\s+(\d{4})\b/i;
+const UC_SKIP   = /Sold inițial|Sold final|Sume debitate|Sume creditate|UniCredit Bank|Bulevardul|Capital social|Operator|Tel:|Email:|Fondurile|Bancă membră|unicredit\.ro|DENUMIRE|ADRESA|SUCURSALA|TIP CONT:|IBAN:|MONEDA|EXTRAS DE CONT|SUMAR CONT|TRANZACȚII|Data\s+Descriere|Sold\(RON\)|Șef|Departament|Extras de cont/i;
+const UC_DX     = [330, 415];
+const UC_CX     = [415, 490];
+const UC_SX     = [490, 580];
+
+function parseUC(words) {
+  const rows = groupIntoRows(words);
+  const txs  = []; let curDate = null;
+  for (const row of rows) {
+    const rt = row.words.map(w=>w.text).join(' ');
+    if (UC_SKIP.test(rt)) continue;
+    const dm = rt.match(UC_DATE);
+    if (dm) {
+      const d=dm[1].padStart(2,'0'), m=UC_MONTHS[dm[2].toLowerCase()], y=dm[3];
+      curDate = `${d}.${String(m).padStart(2,'0')}.${y}`;
+    }
+    if (!curDate) continue;
+    const amts = row.words.filter(w=>isAmtDot(w.text));
+    if (amts.length >= 3) continue;
+    for (const w of amts) {
+      const cx = w.x + (w.w||20)/2;
+      if (cx >= UC_SX[0]) continue;
+      const val  = toFloatDot(w.text);
+      const desc = rt.replace(UC_DATE,'').replace(AMT_DOT,'').trim();
+      const iban = getIBAN(rt); const cui = getCUI(rt);
+      if (cx >= UC_DX[0] && cx <= UC_DX[1])
+        txs.push(makeRow('P', curDate, val, desc||'Plata', cui, iban));
+      else if (cx >= UC_CX[0] && cx <= UC_CX[1])
+        txs.push(makeRow('I', curDate, val, desc||'Incasare', cui, iban));
+    }
+  }
+  return txs;
+}
+
+// ─── BCR Parser ───────────────────────────────────────────────────────────────
+const BCR_SKIP = /BANCA COMERCIALA|SOCIETATE|Soseaua|Inmatriculata|Cod Unic|Capital Social|SWIFT|Site:|InfoBCR|EXTRAS DE CONT|pe perioada|Cont nou:|Produse|Titular:|Tip produs:|Data operatiunii|Explicatie|Referinta|Document|Tranzactii finalizate|Sold contabil|Plafon disponibil|Pagina|Total tranzactii|PREZENTUL|Soldul disponibil/i;
+const BCR_DX   = [460, 520];
+const BCR_CX   = [530, 590];
+
+function parseBCR(words) {
+  const rows = groupIntoRows(words, 6);
+  const txs  = []; let curDate = null;
+  for (const row of rows) {
+    const rt = row.words.map(w=>w.text).join(' ');
+    if (BCR_SKIP.test(rt)) continue;
+    const allText = row.words.map(w=>w.text);
+    const dateWord = allText.find(t => /^\d{2}-\d{2}-\d{4}$/.test(t));
+    const timeWord = allText.find(t => /^\d{2}:\d{2}$/.test(t));
+    if (dateWord && timeWord) {
+      const [d, m, y] = dateWord.split('-');
+      curDate = `${d}.${m}.${y}`;
+    }
+    if (!curDate) continue;
+    for (const w of row.words) {
+      if (!isAmtCom(w.text)) continue;
+      const val = toFloatCom(w.text);
+      if (val === 0) continue;
+      const cx  = w.x + (w.w||20)/2;
+      const desc = row.words
+        .filter(wd => !isAmtCom(wd.text) && !/^\d{2}-\d{2}-\d{4}$/.test(wd.text)
+                   && !/^\d{2}:\d{2}$/.test(wd.text) && !/^\d{10,}$/.test(wd.text))
+        .map(w => w.text).join(' ').substring(0, 80);
+      if (cx >= BCR_DX[0] && cx <= BCR_DX[1])
+        txs.push(makeRow('P', curDate, val, desc||'Plata', '', getIBAN(rt)));
+      else if (cx >= BCR_CX[0] && cx <= BCR_CX[1])
+        txs.push(makeRow('I', curDate, val, desc||'Incasare', '', getIBAN(rt)));
+    }
+  }
+  return txs;
+}
+
+// ─── Raiffeisen Parser ────────────────────────────────────────────────────────
+// Format: coloane fixe px, sume internaționale (isAmtDot)
+// Coloane PDF: Dată înreg. ~30-100px | Data tranz. ~100-170px |
+//              Descriere ~170-430px | Debit ~430-525px | Credit ~525-640px
+const RZ_DATE  = /^\d{2}\.\d{2}\.\d{4}$/;
+const RZ_SKIP  = /^(Raiffeisen Bank|Sediul in|Fax:|E-mail:|centrala@|www\.raiffeisen|C\.U\.I\.|Capital Social|Num[aă]r de înregistrare|Registrul|Agent Afiliat|Cod de înregistrare|Call Center|Societate administrat|PJR|EUID)/i;
+const RZ_HDR   = /Dat[aă]\s+înregistrare|Suma\s+debit|Descrierea\s+tranzac|^Pagina\s+\d/i;
+const RZ_ACCT  = /RABEC|Num[aă]r client|Cod IBAN/i;  // header pagini 2+
+const RZ_SOLD  = /^Sold\s+(final|ini[tț]ial)/i;
+const RZ_DX    = [430, 525];   // coloana Sumă debit
+const RZ_CX    = [525, 640];   // coloana Sumă credit
+const RZ_DMAX  = 175;          // x maxim pentru coloanele de dată
+
+function parseRaiffeisen(words) {
+  const rows = groupIntoRows(words, 3);
+  const txs  = [];
+  let cur    = null;
+
+  function flush() {
+    if (!cur) return;
+    cur.furnizor = cur._desc.join(' | ').trim();
+    delete cur._desc;
+    if (cur.val > 0) txs.push(makeRow(cur.tip, cur.date, cur.val, cur.furnizor, cur.cui, cur.iban));
+    cur = null;
+  }
+
+  for (const row of rows) {
+    const ws = row.words.filter(w => w.text.trim() !== '');
+    if (!ws.length) continue;
+
+    const rowText = ws.map(w => w.text).join(' ');
+
+    // Skip linii de infrastructură
+    if (RZ_SKIP.test(rowText))  { flush(); continue; }
+    if (RZ_HDR.test(rowText))   continue;
+    if (RZ_ACCT.test(rowText))  continue;
+    if (RZ_SOLD.test(rowText))  { flush(); continue; }
+
+    // Detectăm sume în coloanele debit/credit
+    let debitAmt = null, creditAmt = null, debitW = null, creditW = null;
+    for (const w of ws) {
+      if (!isAmtDot(w.text)) continue;
+      const v = toFloatDot(w.text);
+      if (v === 0) continue;
+      if (w.x >= RZ_DX[0] && w.x <= RZ_DX[1]) { debitAmt = v;  debitW  = w; }
+      else if (w.x >= RZ_CX[0] && w.x <= RZ_CX[1]) { creditAmt = v; creditW = w; }
+    }
+
+    // Rând nou de tranzacție: prima celulă e dată în stânga + are sumă
+    const first = ws[0];
+    const isDateRow = RZ_DATE.test(first.text) && first.x < RZ_DMAX;
+
+    if (isDateRow && (debitAmt !== null || creditAmt !== null)) {
+      flush();
+
+      // Data tranzacției = al doilea token DD.MM.YYYY (dacă există)
+      let txDate = first.text;
+      if (ws[1] && RZ_DATE.test(ws[1].text)) txDate = ws[1].text;
+
+      // Descriere pe primul rând (exclude datele și sumele)
+      const descWords = ws.filter(w =>
+        !RZ_DATE.test(w.text) &&
+        w !== debitW && w !== creditW &&
+        w.x < RZ_DX[0]
+      );
+      const firstDesc = descWords.map(w => w.text).join(' ').trim();
+
+      cur = {
+        date: txDate,
+        tip:  debitAmt !== null ? 'P' : 'I',
+        val:  debitAmt !== null ? debitAmt : creditAmt,
+        iban: '', cui: '',
+        _desc: firstDesc ? [firstDesc] : [],
+      };
+      continue;
+    }
+
+    // Rând de continuare (descriere multi-linie)
+    if (cur) {
+      const maybeIBAN = getIBAN(rowText);
+      if (maybeIBAN && !cur.iban) { cur.iban = maybeIBAN; continue; }
+
+      const maybeCUI = getCUI(rowText);
+      if (maybeCUI && !cur.cui) { cur.cui = maybeCUI; }
+
+      // Nu adăugăm rânduri care sunt doar IBAN sau doar numele băncii
+      const isJustIBAN = /^RO\d{2}\s+[A-Z]{4}/.test(rowText.trim());
+      const isJustBank = /^(RAIFFEISEN|ING BANK|BANCA|BCR)/i.test(rowText.trim()) && ws.length <= 5;
+      if (!isJustIBAN && !isJustBank) cur._desc.push(rowText.trim());
+    }
+  }
+  flush();
+  return txs;
+}
+
+// ─── CSV builder ──────────────────────────────────────────────────────────────
+function toCSV(rows) {
+  const FIELDS = ['Tip','Nr. doc.','Data','Suma','Furnizor / Client','Cod fiscal','IBAN','Cont','Preluat'];
+  const esc = v => `"${String(v).replace(/"/g,'""')}"`;
+  const lines = [FIELDS.join(',')];
+  for (const r of rows) lines.push(FIELDS.map(f => esc(r[f]||'')).join(','));
+  return '\uFEFF' + lines.join('\r\n');
+}
+
+// ─── Main convert ─────────────────────────────────────────────────────────────
+async function convertPDF() {
+  if (!selectedFile) return;
+
+  document.getElementById('btnConvert').disabled = true;
+  document.getElementById('resultCard').classList.remove('visible');
+  document.getElementById('termBody').innerHTML = '';
+  document.getElementById('progressBar').classList.add('visible');
+  document.getElementById('progressFill').className = 'progress-fill indeterminate';
+
+  try {
+    log('Se citeste fisierul PDF...');
+    const ab  = await selectedFile.arrayBuffer();
+    const pdf  = await pdfjsLib.getDocument({ data: ab }).promise;
+    log(`Pagini detectate: ${pdf.numPages}`);
+
+    log('Se extrag cuvintele si pozitiile...');
+    const words = await extractWords(pdf);
+    log(`Cuvinte extrase: ${words.length}`);
+
+    const bank = detectBank(words);
+    log(`Banca detectata: ${bank}`, 'log-ok');
+    bankName = bank;
+
+    const parsers = {
+      BT:          parseBT,
+      ING:         parsING,
+      UniCredit:   parseUC,
+      BCR:         parseBCR,
+      Raiffeisen:  parseRaiffeisen,
+    };
+    if (!parsers[bank]) {
+      throw new Error(`Banca "${bank}" nu este inca suportata.\nSuportate: BT, ING, UniCredit, BCR, Raiffeisen`);
+    }
+
+    log(`Se parseaza formatul ${bank}...`);
+    const txs = parsers[bank](words);
+
+    if (txs.length === 0) {
+      throw new Error('Nu s-au gasit tranzactii. PDF-ul poate fi scanat (poza) sau format necunoscut.');
+    }
+
+    const p = txs.filter(t=>t.Tip==='P').length;
+    const i = txs.filter(t=>t.Tip==='I').length;
+    log(`Tranzactii gasite: ${txs.length}`, 'log-ok');
+    log(`  Plati (P):     ${p}`);
+    log(`  Incasari (I):  ${i}`);
+
+    csvContent = toCSV(txs);
+
+    document.getElementById('statTotal').textContent = txs.length;
+    document.getElementById('statP').textContent = p;
+    document.getElementById('statI').textContent = i;
+    document.getElementById('resultCard').classList.add('visible');
+
+    document.getElementById('btnDownload').onclick = () => {
+      const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+      const url  = URL.createObjectURL(blob);
+      const a    = document.createElement('a');
+      a.href     = url;
+      a.download = selectedFile.name.replace('.pdf','') + '_SAGA.csv';
+      a.click();
+      URL.revokeObjectURL(url);
+      log('CSV descarcat cu succes!', 'log-ok');
+    };
+
+    log('GATA! Apasa butonul de descarcare.', 'log-ok');
+
+  } catch(err) {
+    log('EROARE: ' + err.message, 'log-err');
+    console.error(err);
+  } finally {
+    document.getElementById('progressBar').classList.remove('visible');
+    document.getElementById('btnConvert').disabled = false;
+  }
+}
+</script>
+</body>
+</html>
