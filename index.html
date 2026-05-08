@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>PDF Extras → SAGA CSV</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script>
   if (typeof pdfjsLib !== 'undefined') {
     pdfjsLib.GlobalWorkerOptions.workerSrc =
@@ -220,9 +221,10 @@
       <div class="stat-box"><span class="stat-num green" id="statI">0</span><div class="stat-label">INCASARI (I)</div></div>
     </div>
     <button class="btn-download" id="btnDownload">⬇ Descarca CSV pentru SAGA</button>
+    <button class="btn-download" id="btnDownloadXLS" style="display:none;margin-top:10px;background:#0055ff;color:#fff;">⬇ Descarca XLS pentru SAGA (Raiffeisen)</button>
   </div>
 
-  <div class="footer">
+  <div class="footer" id="footerHint">
     Dupa descarcare: SAGA → Fisiere → Import → Extras cont → CSV
   </div>
 </div>
@@ -275,11 +277,165 @@ const CUI_RE  = /(?:CUI[:\s]*|Cod fiscal[:\s]*)(\d{5,10})/i;
 function getIBAN(t) { const m = t.match(IBAN_RE); return m ? m[0] : ''; }
 function getCUI(t)  { const m = t.match(CUI_RE);  return m ? m[1] : ''; }
 function fmtSum(v)  { return Math.abs(v).toFixed(2).replace('.', ','); }
+
+// Row intern folosit de toti parserii
 function makeRow(tip, date, val, furnizor, cui='', iban='') {
-  return { Tip: tip, 'Nr. doc.': '', Data: date, Suma: fmtSum(val),
-           'Furnizor / Client': furnizor.substring(0,80),
-           'Cod fiscal': cui, IBAN: iban, Cont: '', Preluat: '' };
+  return { tip, date, val: Math.abs(val), furnizor: furnizor.substring(0,200), cui, iban };
 }
+
+// ─── CSV nativ BT ─────────────────────────────────────────────────────────────
+function toCSV_BT(rows, acctIBAN) {
+  const esc = v => `"${String(v).replace(/"/g,'""')}"`;
+  const cvtDate = d => d ? d.replace(/\./g,'/') : '';
+  const meta = [
+    '"Lista de tranzactii",,,,,,',
+    ',,,,,,',
+    `"Numar cont:",${acctIBAN},,,,, `,
+    '"Descriere cont:","Cont de disponibil",,,,, ',
+    '"Moneda cont:","RON",,,,, ',
+    ',,,,,,',
+  ];
+  const hdr = '"Data tranzactie","Data valuta","Referinta","Tip tranzactie","Descriere","Debit","Credit"';
+  const lines = [...meta, hdr];
+  for (const r of rows) {
+    const dt    = cvtDate(r.date);
+    const desc  = [r.furnizor, r.iban, r.cui].filter(Boolean).join(';');
+    const debit = r.tip === 'P' ? r.val.toFixed(2) : '';
+    const cred  = r.tip === 'I' ? r.val.toFixed(2) : '';
+    lines.push([esc(dt), esc(dt), '""', esc(r.tip==='P'?'Plata':'Incasare'), esc(desc), debit, cred].join(','));
+  }
+  return '\uFEFF' + lines.join('\r\n');
+}
+
+
+// ─── CSV nativ BCR / ING ──────────────────────────────────────────────────────
+// BCR si ING folosesc EXACT acelasi format CSV cu 22 coloane
+// Col 10=data tranzactie, Col 12=descriere, Col 14=debit, Col 15=credit
+function toCSV_BCR_ING(rows, acctIBAN) {
+  const today = new Date();
+  const p = n => String(n).padStart(2,'0');
+  const todayFmt = `${p(today.getDate())}.${p(today.getMonth()+1)}.${today.getFullYear()}`;
+  const esc = v => {
+    const s = String(v);
+    // Ghilimele doar daca contine virgula, ghilimele sau newline
+    if (s.includes(',') || s.includes('"') || s.includes('\n'))
+      return `"${s.replace(/"/g,'""')}"`;
+    return s;
+  };
+  const hdr = "Issuing date of the statement,Issuing time of the statement,Starting date,End date,Currency ,BNR exchange rate,Statement issued for account ,Product type,Account owner,First opening accounting balance,Transaction completion date,Transaction completion hour,Transaction's details,Operation's reference,Debit (amount),Credit (amount),Total debit (amount),Total credit (amount),Final accounting balance,Blocked amounts,Available balance,Credit lines available limit";
+  const lines = [hdr];
+  for (const r of rows) {
+    const debit = r.tip === 'P' ? r.val.toFixed(2) : '0.00';
+    const cred  = r.tip === 'I' ? r.val.toFixed(2) : '0.00';
+    const cols = [
+      todayFmt, '00:00', '', '', 'RON', '',
+      acctIBAN, '', '', '0.00',
+      r.date, '00:00',
+      esc(r.furnizor),
+      esc([r.iban, r.cui].filter(Boolean).join(' ')),
+      debit, cred,
+      '0.00', '0.00', '0.00', '0.00', '0.00', '0.00'
+    ];
+    lines.push(cols.join(','));
+  }
+  return '\uFEFF' + lines.join('\r\n');
+}
+
+// ─── CSV generic (UniCredit) ──────────────────────────────────────────────────
+function toCSV_generic(rows) {
+  const FIELDS = ['Tip','Nr. doc.','Data','Suma','Furnizor / Client','Cod fiscal','IBAN','Cont','Preluat'];
+  const clean = v => String(v).replace(/;/g, ',');
+  const lines = [FIELDS.join(';')];
+  for (const r of rows) {
+    const sr = { 'Tip': r.tip, 'Nr. doc.': '', 'Data': r.date, 'Suma': fmtSum(r.val),
+                 'Furnizor / Client': r.furnizor, 'Cod fiscal': r.cui,
+                 'IBAN': r.iban, 'Cont': '', 'Preluat': '' };
+    lines.push(FIELDS.map(f => clean(sr[f]||'')).join(';'));
+  }
+  return '\uFEFF' + lines.join('\r\n');
+}
+
+// ─── Router CSV per banca ──────────────────────────────────────────────────────
+function toCSV(rows, bank, acctIBAN='') {
+  if (bank === 'BT')                    return toCSV_BT(rows, acctIBAN);
+  if (bank === 'BCR' || bank === 'ING') return toCSV_BCR_ING(rows, acctIBAN);
+  return toCSV_generic(rows);
+}
+
+// ─── XLS nativ Raiffeisen ─────────────────────────────────────────────────────
+// Mimeaza EXACT formatul exportat din Raiffeisen Online
+// Structura: rand 1-3 metadate, 7-11 date client, 13 IBAN, 15-16 solduri,
+//            rand 18 = header coloane, rand 19 = gol, rand 20+ = tranzactii
+// Date format: DD/MM/YYYY, sume ca numere float
+function toXLS_Raiffeisen(rows, acctIBAN) {
+  const today = new Date();
+  const p = n => String(n).padStart(2,'0');
+  const todayShort = `${p(today.getDate())}/${p(today.getMonth()+1)}/${String(today.getFullYear()).slice(2)}`;
+  const todayFull  = `${p(today.getDate())}/${p(today.getMonth()+1)}/${today.getFullYear()}`;
+
+  // Convertim data din DD.MM.YYYY → DD/MM/YYYY (formatul Raiffeisen)
+  const cvtDate = d => d ? d.replace(/\./g, '/') : todayFull;
+
+  // Calculam rulaj debit si credit
+  const rulajD = rows.filter(r=>r.tip==='P').reduce((s,r)=>s+r.val,0);
+  const rulajC = rows.filter(r=>r.tip==='I').reduce((s,r)=>s+r.val,0);
+
+  const metaRows = [
+    // Rand 1-3: metadate extras
+    ['Data generare extras:', todayShort, null, null, null, null, null, null, null, null, null, null],
+    ['Perioada:', `de la ${todayFull} la ${todayFull}`, null, null, null, null, null, null, null, null, null, null],
+    ['Numar extras:', '1', null, null, null, null, null, null, null, null, null, null],
+    // Rand 4-6: goale
+    [null],[null],[null],
+    // Rand 7-11: date client
+    ['Nume client:', '', null, null, null, null, null, null, null, null, null, null],
+    ['Adresa:', '', null, null, null, null, null, null, null, null, null, null],
+    ['Numar client:', '', null, null, null, null, null, null, null, null, null, null],
+    ['Cod BIC Raiffeisen Bank:', 'RZBRROBU', null, null, null, null, null, null, null, null, null, null],
+    ['Unitate Bancara:', 'RAIFFEISEN BANK S.A.', null, null, null, null, null, null, null, null, null, null],
+    // Rand 12: gol
+    [null],
+    // Rand 13: IBAN
+    ['Cod IBAN:', acctIBAN, 'Tip cont:', 'curent', 'Valuta:', 'LEI', null, null, null, null, null, null],
+    // Rand 14: gol
+    [null],
+    // Rand 15-16: solduri
+    ['Sold initial', 'Rulaj debitor', 'Rulaj creditor', 'Sold final', null, null, null, null, null, null, null, null],
+    ['0.00', rulajD.toFixed(2), rulajC.toFixed(2), (rulajC - rulajD).toFixed(2), null, null, null, null, null, null, null, null],
+    // Rand 17: gol
+    [null],
+    // Rand 18: header coloane (EXACT ca in fisierul original)
+    ['Data inregistrare','Data tranzactiei','Suma debit','Suma credit','Nr. OP',
+     'Cod fiscal beneficiar','Ordonator final','Beneficiar final',
+     'Nume/Denumire \n ordonator/beneficiar','Denumire Banca \nordonator/ beneficiar',
+     'Nr. cont in/din care se \n efectueaza tranzactiile','Descrierea tranzactiei'],
+    // Rand 19: gol intre header si date
+    [null],
+  ];
+
+  // Randurile de tranzactii (de la rand 20)
+  const txRows = rows.map(r => [
+    cvtDate(r.date),                      // Col A: Data inregistrare
+    cvtDate(r.date),                      // Col B: Data tranzactiei
+    r.tip === 'P' ? r.val : null,         // Col C: Suma debit (numar, nu string)
+    r.tip === 'I' ? r.val : null,         // Col D: Suma credit
+    '',                                    // Col E: Nr. OP
+    r.cui || '',                           // Col F: Cod fiscal beneficiar
+    '',                                    // Col G: Ordonator final
+    '',                                    // Col H: Beneficiar final
+    r.furnizor,                            // Col I: Nume/Denumire
+    '',                                    // Col J: Denumire Banca
+    r.iban || '',                          // Col K: Nr. cont
+    r.furnizor,                            // Col L: Descrierea tranzactiei
+  ]);
+
+  const allRows = [...metaRows, ...txRows];
+  const ws = XLSX.utils.aoa_to_sheet(allRows);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Pagina 1');
+  return XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
+}
+
 
 // ─── Extract words from PDF ───────────────────────────────────────────────────
 async function extractWords(pdf) {
@@ -506,41 +662,76 @@ function parseUC(words) {
 }
 
 // ─── BCR Parser ───────────────────────────────────────────────────────────────
-const BCR_SKIP = /BANCA COMERCIALA|SOCIETATE|Soseaua|Inmatriculata|Cod Unic|Capital Social|SWIFT|Site:|InfoBCR|EXTRAS DE CONT|pe perioada|Cont nou:|Produse|Titular:|Tip produs:|Data operatiunii|Explicatie|Referinta|Document|Tranzactii finalizate|Sold contabil|Plafon disponibil|Pagina|Total tranzactii|PREZENTUL|Soldul disponibil/i;
-const BCR_DX   = [460, 520];
-const BCR_CX   = [530, 590];
+// Format RO (firma):    "DD-MM-YYYY HH:MM Descriere  Referinta  5.200,65  0,00"
+// Format EN (personal): "MM/DD/YYYY HH:MM Descriere  Referinta  10.50     0.00"
+// Pozitii x identice:   data=14, ora=51, descriere=76-345, referinta=348+, debit=472, credit=552
+const BCR_SKIP_RE = /^(BANCA COMERCIALA|ROMANIAN COMMERCIAL|JOINT STOCK|SOCIETATE|Soseaua|15D Orhideelor|Inmatriculata|Registered with|Trade Register|Taxpayer|Share capital|Cod Unic|Capital Social|SWIFT|Site:|Website:|InfoBCR|InfoBCR:|pe perioada|period:|Produse in valuta|Product currency|Tip produs:|Product type:|Data operatiunii|Operation Date|Explicatie|Explanation|Referinta\s+Oper|Oper\.\s+Reference|Tranzactii finalizate:|Final transactions:|Sold contabil|Final amount|Initial amount|Plafon disponibil|Pagina|Page|Total tranzactii|Total transactions|PREZENTUL|By this|Soldul disponibil|The available|Available balance)/i;
+
+// Detectam data RO: DD-MM-YYYY sau EN: MM/DD/YYYY la inceput de rand + HH:MM
+const BCR_DATE_RO = /^(\d{2})-(\d{2})-(\d{4})\s+\d{2}:\d{2}/;  // DD-MM-YYYY
+const BCR_DATE_EN = /^(\d{2})\/(\d{2})\/(\d{4})\s+\d{2}:\d{2}/; // MM/DD/YYYY
+
+const BCR_DESC_MAX_X = 345;
+const BCR_DEBIT_X    = [440, 530];
+const BCR_CREDIT_X   = [530, 600];
 
 function parseBCR(words) {
   const rows = groupIntoRows(words, 6);
-  const txs  = []; let curDate = null;
+  const txs  = [];
+
   for (const row of rows) {
-    const rt = row.words.map(w=>w.text).join(' ');
-    if (BCR_SKIP.test(rt)) continue;
-    const allText = row.words.map(w=>w.text);
-    const dateWord = allText.find(t => /^\d{2}-\d{2}-\d{4}$/.test(t));
-    const timeWord = allText.find(t => /^\d{2}:\d{2}$/.test(t));
-    if (dateWord && timeWord) {
-      const [d, m, y] = dateWord.split('-');
-      curDate = `${d}.${m}.${y}`;
+    const rt = row.words.map(w => w.text).join(' ');
+    if (BCR_SKIP_RE.test(rt.trim())) continue;
+
+    // Detectam formatul datei
+    let curDate = null;
+    const mRO = BCR_DATE_RO.exec(rt.trim());
+    const mEN = BCR_DATE_EN.exec(rt.trim());
+
+    if (mRO) {
+      // DD-MM-YYYY → DD.MM.YYYY
+      curDate = `${mRO[1]}.${mRO[2]}.${mRO[3]}`;
+    } else if (mEN) {
+      // MM/DD/YYYY → DD.MM.YYYY
+      curDate = `${mEN[2]}.${mEN[1]}.${mEN[3]}`;
     }
+
     if (!curDate) continue;
+
+    // Detectam daca sumele sunt format RO (virgula) sau EN (punct)
+    const hasCommaAmt = row.words.some(w => isAmtCom(w.text));
+    const hasDotAmt   = row.words.some(w => isAmtDot(w.text) && !isAmtCom(w.text));
+    const useComma    = hasCommaAmt;
+
+    // Descriere: cuvinte cu x intre 70 si 345, nu sume, nu data, nu ora
+    const descWords = row.words.filter(w =>
+      w.x >= 70 &&
+      w.x < BCR_DESC_MAX_X &&
+      !isAmtCom(w.text) &&
+      !isAmtDot(w.text) &&
+      !/^\d{2}[-\/]\d{2}[-\/]\d{4}$/.test(w.text) &&
+      !/^\d{2}:\d{2}$/.test(w.text)
+    );
+    const desc = descWords.map(w => w.text).join(' ').trim().substring(0, 100) || 'Tranzactie BCR';
+
+    // Sume dupa pozitia X
+    let debit = 0, credit = 0;
     for (const w of row.words) {
-      if (!isAmtCom(w.text)) continue;
-      const val = toFloatCom(w.text);
-      if (val === 0) continue;
-      const cx  = w.x + (w.w||20)/2;
-      const desc = row.words
-        .filter(wd => !isAmtCom(wd.text) && !/^\d{2}-\d{2}-\d{4}$/.test(wd.text)
-                   && !/^\d{2}:\d{2}$/.test(wd.text) && !/^\d{10,}$/.test(wd.text))
-        .map(w => w.text).join(' ').substring(0, 80);
-      if (cx >= BCR_DX[0] && cx <= BCR_DX[1])
-        txs.push(makeRow('P', curDate, val, desc||'Plata', '', getIBAN(rt)));
-      else if (cx >= BCR_CX[0] && cx <= BCR_CX[1])
-        txs.push(makeRow('I', curDate, val, desc||'Incasare', '', getIBAN(rt)));
+      const isAmt = useComma ? isAmtCom(w.text) : isAmtDot(w.text);
+      if (!isAmt) continue;
+      const v = useComma ? toFloatCom(w.text) : toFloatDot(w.text);
+      if (v === 0) continue;
+      if (w.x >= BCR_DEBIT_X[0]  && w.x <= BCR_DEBIT_X[1])  debit  = v;
+      if (w.x >= BCR_CREDIT_X[0] && w.x <= BCR_CREDIT_X[1]) credit = v;
     }
+
+    if (debit  > 0) txs.push(makeRow('P', curDate, debit,  desc, '', ''));
+    if (credit > 0) txs.push(makeRow('I', curDate, credit, desc, '', ''));
   }
+
   return txs;
 }
+
 
 // ─── Raiffeisen Parser ────────────────────────────────────────────────────────
 // Format: coloane fixe px, sume internaționale (isAmtDot)
@@ -637,15 +828,6 @@ function parseRaiffeisen(words) {
   return txs;
 }
 
-// ─── CSV builder ──────────────────────────────────────────────────────────────
-function toCSV(rows) {
-  const FIELDS = ['Tip','Nr. doc.','Data','Suma','Furnizor / Client','Cod fiscal','IBAN','Cont','Preluat'];
-  const esc = v => `"${String(v).replace(/"/g,'""')}"`;
-  const lines = [FIELDS.join(',')];
-  for (const r of rows) lines.push(FIELDS.map(f => esc(r[f]||'')).join(','));
-  return '\uFEFF' + lines.join('\r\n');
-}
-
 // ─── Main convert ─────────────────────────────────────────────────────────────
 async function convertPDF() {
   if (!selectedFile) return;
@@ -670,6 +852,11 @@ async function convertPDF() {
     log(`Banca detectata: ${bank}`, 'log-ok');
     bankName = bank;
 
+    // Extragem IBAN-ul contului din header (primele 800 chars)
+    const headerTxt = words.map(w=>w.text).join(' ').substring(0, 800);
+    const acctIBAN  = getIBAN(headerTxt) || '';
+    if (acctIBAN) log(`Cont detectat: ${acctIBAN}`);
+
     const parsers = {
       BT:          parseBT,
       ING:         parsING,
@@ -688,20 +875,22 @@ async function convertPDF() {
       throw new Error('Nu s-au gasit tranzactii. PDF-ul poate fi scanat (poza) sau format necunoscut.');
     }
 
-    const p = txs.filter(t=>t.Tip==='P').length;
-    const i = txs.filter(t=>t.Tip==='I').length;
+    const p = txs.filter(t=>t.tip==='P').length;
+    const i = txs.filter(t=>t.tip==='I').length;
     log(`Tranzactii gasite: ${txs.length}`, 'log-ok');
     log(`  Plati (P):     ${p}`);
     log(`  Incasari (I):  ${i}`);
 
-    csvContent = toCSV(txs);
+    csvContent = toCSV(txs, bank, acctIBAN);
 
     document.getElementById('statTotal').textContent = txs.length;
     document.getElementById('statP').textContent = p;
     document.getElementById('statI').textContent = i;
     document.getElementById('resultCard').classList.add('visible');
 
-    document.getElementById('btnDownload').onclick = () => {
+    // Buton CSV (mereu vizibil)
+    const btnCSV = document.getElementById('btnDownload');
+    btnCSV.onclick = () => {
       const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
       const url  = URL.createObjectURL(blob);
       const a    = document.createElement('a');
@@ -711,6 +900,36 @@ async function convertPDF() {
       URL.revokeObjectURL(url);
       log('CSV descarcat cu succes!', 'log-ok');
     };
+
+    // Buton XLS — doar pentru Raiffeisen
+    const btnXLS = document.getElementById('btnDownloadXLS');
+    if (bank === 'Raiffeisen') {
+      btnXLS.style.display = 'block';
+      btnXLS.onclick = () => {
+        const xlsData = toXLS_Raiffeisen(txs, acctIBAN);
+        const blob = new Blob([xlsData], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+        const url  = URL.createObjectURL(blob);
+        const a    = document.createElement('a');
+        a.href     = url;
+        a.download = selectedFile.name.replace('.pdf','') + '_SAGA.xlsx';
+        a.click();
+        URL.revokeObjectURL(url);
+        log('XLS descarcat cu succes!', 'log-ok');
+      };
+      document.getElementById('footerHint').textContent =
+        'CSV → SAGA: Import → Extras cont → CSV  |  XLS → SAGA: Import → Extras cont → XLS (Raiffeisen)';
+      log('Raiffeisen: disponibil si XLS nativ pentru import automat in SAGA.', 'log-ok');
+    } else {
+      btnXLS.style.display = 'none';
+      const hintMap = {
+        'BT':  'SAGA → Fisiere → Import → Extras cont → CSV (BT)',
+        'BCR': 'SAGA → Fisiere → Import → Extras cont → CSV (BCR)',
+        'ING': 'SAGA → Fisiere → Import → Extras cont → CSV (ING)',
+        'UniCredit': 'SAGA → Fisiere → Import → Extras cont → CSV (Unicredit)',
+      };
+      document.getElementById('footerHint').textContent =
+        hintMap[bank] || 'Dupa descarcare: SAGA → Fisiere → Import → Extras cont → CSV';
+    }
 
     log('GATA! Apasa butonul de descarcare.', 'log-ok');
 
