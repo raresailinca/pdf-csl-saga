@@ -520,108 +520,211 @@ function toFloatDot(s) { return parseFloat(s.replace(/,/g,'')); }
 function toFloatCom(s) { return parseFloat(s.replace(/\./g,'').replace(',','.')); }
 
 // ─── BT Parser ────────────────────────────────────────────────────────────────
-const BT_DATE = /^\d{2}\/\d{2}\/\d{4}$/;
-const BT_SKIP = /SOLD\s|RULAJ\s|BANCA TRANSILVANIA S\.A\.|Info clienti|Solicitant:|Tiparit:|EXTRAS CONT|SUME BLOCATE|TOTAL DISPONIBIL|din care$|Fonduri proprii|Credit neutilizat|Acest extras|www\.bancatransilvania/i;
-const BT_DX   = [420, 500];
-const BT_CX   = [510, 580];
+// Format nou BT (2025+):
+//   x=28:  Rândul principal: DD/MM/YYYY Descriere Suma  (debit x~447, credit x~538)
+//   x=90:  Rândurile de detaliu: sub-tranzactii, REF, IBAN, descrieri suplimentare
+// Fiecare zi poate contine mai multe tranzactii pe randuri de detaliu (x=90)
+// Sume format international: 1,234.56
+const BT_DATE   = /^\d{2}\/\d{2}\/\d{4}$/;
+const BT_SKIP   = /^(SOLD\s|RULAJ\s|BANCA TRANSILVANIA|Info clienti|Solicitant:|Tiparit:|EXTRAS CONT|SUME BLOCATE|TOTAL DISPONIBIL|din care|Fonduri proprii|Credit neutilizat|Acest extras|www\.bancatransilvania|Comisioanele|Fondurile|Data\s+Descriere|SOLD ANTERIOR|Nelimitat BT|CUI:|Client:)/i;
+const BT_DEBIT_X  = [430, 475]; // x coloana Debit
+const BT_CREDIT_X = [525, 565]; // x coloana Credit
+const BT_DATE_X   = [20, 40];   // x coloana Data (randul principal)
+const BT_DETAIL_X = [80, 105];  // x randuri de detaliu
+
 function fmtDateSlash(s) { const [d,m,y] = s.split('/'); return `${d}.${m}.${y}`; }
 
 function parseBT(words) {
-  const rows = groupIntoRows(words);
-  const txs  = []; let curDate = null;
+  const rows = groupIntoRows(words, 3);
+  const txs  = [];
+  let curDate = null;
+
   for (const row of rows) {
-    const rt   = row.words.map(w=>w.text).join(' ');
-    if (BT_SKIP.test(rt)) continue;
-    const amts = row.words.filter(w => isAmtDot(w.text));
-    const nonA = row.words.filter(w => !isAmtDot(w.text));
-    if (amts.length >= 2) continue;
-    if (amts.length === 1 && nonA.length === 0) continue;
-    const first = row.words[0]?.text || '';
-    if (BT_DATE.test(first)) curDate = first;
-    if (!curDate || amts.length !== 1) continue;
-    const aw  = amts[0]; const cx = aw.x + (aw.w||20)/2;
-    const val = toFloatDot(aw.text);
-    const desc = nonA.filter(w=>!BT_DATE.test(w.text)).map(w=>w.text).join(' ');
-    const partnerM = rt.match(/;\d+;([^;\/\n]{2,60}?);(RO\d{2}[A-Z]{4}[A-Z0-9]{16})/);
-    const name  = partnerM ? partnerM[1].trim() : '';
-    const iban  = partnerM ? partnerM[2] : getIBAN(rt);
-    const furnizor = name || desc || 'Tranzactie';
-    if (cx >= BT_DX[0] && cx <= BT_DX[1])
-      txs.push(makeRow('P', fmtDateSlash(curDate), val, furnizor, '', iban));
-    else if (cx >= BT_CX[0] && cx <= BT_CX[1])
-      txs.push(makeRow('I', fmtDateSlash(curDate), val, furnizor, '', iban));
+    const ws = row.words;
+    if (!ws.length) continue;
+    const rt = ws.map(w => w.text).join(' ');
+
+    // Skip linii administrative
+    if (BT_SKIP.test(rt.trim())) continue;
+    if (/^\d{2}\/\d{2}\/\d{4}\s+RULAJ/.test(rt)) continue;
+    if (/^\d{2}\/\d{2}\/\d{4}\s+SOLD/.test(rt)) continue;
+
+    const first = ws[0];
+
+    // Actualizare data curenta daca randul incepe cu data la x~28
+    if (BT_DATE.test(first.text) && first.x >= BT_DATE_X[0] && first.x <= BT_DATE_X[1]) {
+      curDate = first.text;
+    }
+    if (!curDate) continue;
+
+    // Cautam sume in rand (format international: isAmtDot)
+    for (const w of ws) {
+      if (!isAmtDot(w.text)) continue;
+      const v = toFloatDot(w.text);
+      if (v <= 0) continue;
+
+      // Verificam ca suma sa fie in coloana debit sau credit
+      const isDebit  = w.x >= BT_DEBIT_X[0]  && w.x <= BT_DEBIT_X[1];
+      const isCredit = w.x >= BT_CREDIT_X[0] && w.x <= BT_CREDIT_X[1];
+      if (!isDebit && !isCredit) continue;
+
+      // Descriere = tot textul din rand care nu e data si nu e suma
+      const descWords = ws.filter(wd =>
+        !BT_DATE.test(wd.text) &&
+        !isAmtDot(wd.text) &&
+        !/^REF:$/.test(wd.text)
+      );
+      const desc = descWords.map(w => w.text).join(' ').trim().substring(0, 120);
+
+      // IBAN si CUI din rand
+      const iban = getIBAN(rt);
+      const cui  = getCUI(rt);
+
+      // Furnizor: extragem din descriere (primul text semnificativ)
+      // Pattern BT: "/ROC/Descriere;NR;NUME;IBAN;SWIFT" sau text liber
+      let furnizor = desc;
+      const rocM = rt.match(/\/ROC\/([^;]+)/);
+      if (rocM) furnizor = rocM[1].trim();
+      if (!furnizor) furnizor = desc || 'Tranzactie BT';
+
+      txs.push(makeRow(
+        isDebit ? 'P' : 'I',
+        fmtDateSlash(curDate),
+        v,
+        furnizor,
+        cui,
+        iban
+      ));
+    }
   }
   return txs;
 }
 
+
 // ─── ING Parser ───────────────────────────────────────────────────────────────
-const ING_DATE_LINE = /^\s{2,8}(\d{2}\.\d{2}\.\d{4})\s+(.*)/;
-const ING_SKIP_LINE = /ING Bank|Str\. Aviator|BIC code|Acest document|www\.ing|Numar cont:|Titular cont:|Valuta:|Data procesarii|Rezumat|Data\s+Numar\s+tranzactii|Beneficiar \/ Ordonator|\d+\s*\\\s*\d+\s*$/i;
-const ING_SKIP_EXPL = /^(Referinta|Transfer ING Business|Nr\. Card|Autorizare|[a-f0-9]{8}-[a-f0-9]{4}|\d{10,}|Cod fiscal:)/i;
+// Layout ING (pozitii px exacte din PDF):
+//   x=34:  Data procesarii (DD.MM.YYYY) — doar pe randul principal al tranzactiei
+//   x=34:  Nr. referinta bancii (numar 4 cifre) — randul 2 al tranzactiei
+//   x=114: Beneficiar/Ordonator, CUI, IBAN, descriere — randuri multiple
+//   x=249: Debitari (suma negativa sau pozitiva)
+//   x=357: Creditari
+//   x=505+: Sold intermediar (ignorat)
+// Rândul principal: data la x~34 + suma la x~249 sau x~357
+
+const ING_SKIP = /^(ING Bank|Str\. Aviator|BIC code|Acest document|www\.ing|Numar cont:|Titular cont:|Valuta:|Data procesarii|Rezumat|Tranzactii$|Data\s+Numar|Beneficiar\s*\/|Referinta bancii\s+Descrierea|Total creditari|Total debitari|Sold initial|Sold final|\d+\s*\\\s*\d+)/i;
+const ING_DATE_RE = /^\d{2}\.\d{2}\.\d{4}$/;
+const ING_SKIP_DETAIL = /^(Referinta (interna|instant|bancii)|Transfer ING Business|Nr\. Card|Autorizare|[a-f0-9]{8}-[a-f0-9]{4}|[a-f0-9]{8}-[a-f0-9]{4}|^\d{15,}$)/i;
+
+// Coloane px pentru sume
+const ING_DEBIT_X  = [230, 320]; // x~249
+const ING_CREDIT_X = [340, 430]; // x~357
+const ING_SOLD_X   = 490;        // sold intermediar — ignorat
+const ING_DATE_X   = [25, 55];   // x~34
+const ING_REF_X    = [25, 55];   // nr referinta banca (4 cifre) — tot la x~34
+const ING_DESC_X   = [105, 240]; // x~114 — beneficiar, CUI, IBAN, descriere
 
 function parsING(words) {
-  const rows  = groupIntoRows(words, 3);
-  const lines = rows.map(row => {
-    let line = '';
-    for (const w of row.words) {
-      const targetCol = Math.round(w.x / 7);
-      while (line.length < targetCol) line += ' ';
-      line += w.text;
-    }
-    return line;
-  });
-
-  const txs = [];
-  let curDate = null, curName = '', curTip = null, curVal = 0;
-  let curIban = '', curCui = '', expl = [];
+  const rows = groupIntoRows(words, 4);
+  const txs  = [];
+  let cur = null;
 
   function flush() {
-    if (curDate && curTip && curVal > 0) {
-      const e = expl.filter(p => p && !ING_SKIP_EXPL.test(p));
-      const furnizor = [curName, ...e.slice(0,2)].filter(Boolean).join(' | ').substring(0, 120) || curTip;
-      txs.push(makeRow(curTip, curDate, curVal, furnizor, curCui, curIban));
-    }
+    if (!cur || cur.val <= 0) { cur = null; return; }
+    // Construim furnizorul: nume + descriere relevanta
+    const descParts = cur._desc.filter(d => {
+      if (!d || d.length < 2) return false;
+      if (ING_SKIP_DETAIL.test(d)) return false;
+      if (/^\d{4}$/.test(d)) return false; // nr referinta banca
+      return true;
+    });
+    const furnizor = [cur.name, ...descParts.slice(0,2)]
+      .filter(Boolean).join(' | ').substring(0, 150) || 'Tranzactie ING';
+    txs.push(makeRow(cur.tip, cur.date, cur.val, furnizor, cur.cui, cur.iban));
+    cur = null;
   }
 
-  for (const line of lines) {
-    if (ING_SKIP_LINE.test(line)) continue;
-    const stripped = line.trim();
-    if (!stripped) continue;
+  for (const row of rows) {
+    const ws = row.words;
+    if (!ws.length) continue;
+    const rowText = ws.map(w => w.text).join(' ');
 
-    const dm = ING_DATE_LINE.exec(line);
-    if (dm) {
-      const amtMatches = [];
-      const re = /-?[\d,]+\.\d{2}/g;
-      let m;
-      while ((m = re.exec(line)) !== null) {
-        if (m.index < 20) continue;
-        amtMatches.push({ val: parseFloat(m[0].replace(/,/g,'')), col: m.index });
+    // Skip randuri de infrastructura
+    if (ING_SKIP.test(rowText.trim())) continue;
+
+    // Cautam suma debit/credit in rand
+    let debitAmt = null, creditAmt = null;
+    for (const w of ws) {
+      if (!isAmtDot(w.text)) continue;
+      const v = toFloatDot(w.text);
+      if (w.x >= ING_DEBIT_X[0] && w.x <= ING_DEBIT_X[1]) {
+        debitAmt = v; // poate fi negativ
+      } else if (w.x >= ING_CREDIT_X[0] && w.x <= ING_CREDIT_X[1]) {
+        creditAmt = v;
       }
-      if (!amtMatches.length) continue;
+    }
+
+    // Verificam daca randul are data la x~34
+    const firstW = ws[0];
+    const hasDate = ING_DATE_RE.test(firstW.text) &&
+                    firstW.x >= ING_DATE_X[0] && firstW.x <= ING_DATE_X[1];
+
+    // Rândul principal al tranzactiei: data + cel putin o suma
+    if (hasDate && (debitAmt !== null || creditAmt !== null)) {
       flush();
-      curDate = dm[1];
-      curName = dm[2].replace(/-?[\d,]+\.\d{2}/g, '').replace(/\s{2,}/g,' ').trim();
-      curIban = ''; curCui = ''; expl = []; curTip = null; curVal = 0;
-      for (const { val, col } of amtMatches) {
-        if (col >= 68) continue;
-        if (val < 0 || (col >= 30 && col <= 52)) { curTip = 'P'; curVal = Math.abs(val); break; }
-        else if (val > 0 && col >= 48 && col <= 67) { curTip = 'I'; curVal = val; break; }
+
+      // Determinam tip si valoare
+      let tip, val;
+      if (debitAmt !== null && creditAmt === null) {
+        // Doar debit
+        tip = 'P'; val = Math.abs(debitAmt);
+      } else if (creditAmt !== null && debitAmt === null) {
+        // Doar credit
+        tip = 'I'; val = creditAmt;
+      } else if (debitAmt !== null && creditAmt !== null) {
+        // Ambele — luam cea mai mare (sold intermediar poate parea credit)
+        // Daca debit e negativ = plata
+        if (debitAmt < 0) { tip = 'P'; val = Math.abs(debitAmt); }
+        else { tip = 'I'; val = creditAmt; }
+      } else {
+        continue;
       }
-      if (!curTip && amtMatches.length) {
-        const first = amtMatches.find(a => a.col < 68);
-        if (first) { curTip = first.val < 0 ? 'P' : 'I'; curVal = Math.abs(first.val); }
-      }
+
+      if (val <= 0) continue;
+
+      // Numele beneficiarului/ordonatorului = cuvinte la x~114 pe acest rand
+      const nameWords = ws.filter(w =>
+        w.x >= ING_DESC_X[0] && w.x <= ING_DESC_X[1] &&
+        !isAmtDot(w.text) && !ING_DATE_RE.test(w.text)
+      );
+      const name = nameWords.map(w => w.text).join(' ').trim();
+
+      cur = { date: firstW.text, tip, val, name, iban: '', cui: '', _desc: [] };
       continue;
     }
-    if (!curDate) continue;
-    const ib = getIBAN(stripped); if (ib && !curIban) { curIban = ib; continue; }
-    const cu = getCUI(stripped);  if (cu && !curCui)  { curCui  = cu; continue; }
-    if (/^\d+$/.test(stripped)) continue;
-    expl.push(stripped);
+
+    // Rand de continuare — colectam detalii
+    if (cur) {
+      // IBAN
+      const ib = getIBAN(rowText);
+      if (ib && !cur.iban) { cur.iban = ib; continue; }
+
+      // CUI
+      const cu = getCUI(rowText);
+      if (cu && !cur.cui) cur.cui = cu;
+
+      // Adaugam la descriere daca e la x~114 si nu e de skip
+      const descWords = ws.filter(w => w.x >= ING_DESC_X[0] && w.x < 500);
+      const descText = descWords.map(w => w.text).join(' ').trim();
+      if (descText && !ING_SKIP_DETAIL.test(descText) &&
+          !/^\d{4}$/.test(descText) && !ING_DATE_RE.test(descText)) {
+        cur._desc.push(descText);
+      }
+    }
   }
   flush();
   return txs;
 }
+
 
 // ─── UniCredit Parser ─────────────────────────────────────────────────────────
 const UC_MONTHS = {ianuarie:1,februarie:2,martie:3,aprilie:4,mai:5,iunie:6,
